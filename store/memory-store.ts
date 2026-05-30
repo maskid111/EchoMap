@@ -15,6 +15,7 @@ import {
   fetchPublicRegistryMemories,
   fetchRegistryMemoriesByWallet,
   fetchSavedMemoryIdsForWallet,
+  fetchArchivedMemoryIdsForWallet,
   getRegistryConfig,
 } from '@/lib/registry';
 
@@ -24,6 +25,7 @@ interface MemoryStoreValue {
   uploadedMemories: MemoryDetail[];
   registryMemories: MemoryDetail[];
   walletRegistryMemories: MemoryDetail[];
+  archivedRegistryMemories: MemoryDetail[];
   savedMemories: MemoryDetail[];
   activeMemory: MemoryDetail | null;
   selectedYear: number;
@@ -50,6 +52,7 @@ interface MemoryStoreValue {
   clearWalletRegistryMemories: () => void;
   refreshRegistryMemories: (walletAddress?: string | null) => Promise<void>;
   refreshSavedMemoriesFromRegistry: (walletAddress?: string | null) => Promise<void>;
+  refreshArchivedMemoriesFromRegistry: (walletAddress?: string | null) => Promise<void>;
 }
 
 const MemoryStoreContext = createContext<MemoryStoreValue | null>(null);
@@ -125,6 +128,7 @@ export function MemoryStoreProvider({ children }: { children: ReactNode }) {
   const [uploadedMemories, setUploadedMemories] = useState<MemoryDetail[]>([]);
   const [registryMemories, setRegistryMemories] = useState<MemoryDetail[]>([]);
   const [walletRegistryMemories, setWalletRegistryMemories] = useState<MemoryDetail[]>([]);
+  const [archivedRegistryMemories, setArchivedRegistryMemories] = useState<MemoryDetail[]>([]);
 
   const persistSavedMemoryIds = useCallback((ids: string[]) => {
     window.localStorage.setItem(savedMemoriesStorageKey, JSON.stringify(ids));
@@ -136,8 +140,17 @@ export function MemoryStoreProvider({ children }: { children: ReactNode }) {
       const publicMemories = await fetchPublicRegistryMemories();
       setRegistryMemories(publicMemories);
       if (walletAddress) {
-        const walletMemories = await fetchRegistryMemoriesByWallet(walletAddress);
-        setWalletRegistryMemories(walletMemories);
+        const [walletMemories, archivedBlobIds] = await Promise.all([
+          fetchRegistryMemoriesByWallet(walletAddress),
+          fetchArchivedMemoryIdsForWallet(walletAddress),
+        ]);
+        const archivedBlobIdSet = new Set(archivedBlobIds);
+        setWalletRegistryMemories(
+          walletMemories.filter((memory) => !memory.archived && !archivedBlobIdSet.has(memory.metadataWalrusBlobId || ''))
+        );
+        setArchivedRegistryMemories(
+          walletMemories.filter((memory) => memory.archived || archivedBlobIdSet.has(memory.metadataWalrusBlobId || ''))
+        );
       }
     } catch (error) {
       if (process.env.NODE_ENV === 'development') {
@@ -164,28 +177,32 @@ export function MemoryStoreProvider({ children }: { children: ReactNode }) {
 
   const allMemories = useMemo<MemoryPin[]>(
     () => {
-      const registryIds = new Set(registryMemories.map((memory) => memory.metadataWalrusBlobId || memory.id));
+      const registryIds = new Set(
+        [...registryMemories, ...walletRegistryMemories, ...archivedRegistryMemories]
+          .map((memory) => memory.metadataWalrusBlobId || memory.id)
+      );
       const localOnlyUploads = uploadedMemories.filter(
         (memory) =>
           (memory.visibility || 'public') === 'public' &&
+          !memory.archived &&
           Boolean(memory.suiTxDigest && memory.metadataWalrusBlobId) &&
           !registryIds.has(memory.metadataWalrusBlobId || memory.id)
       );
       return [...registryMemories, ...localOnlyUploads];
     },
-    [registryMemories, uploadedMemories]
+    [archivedRegistryMemories, registryMemories, uploadedMemories, walletRegistryMemories]
   );
 
   const allMemoryDetails = useMemo<Record<string, MemoryDetail>>(
     () =>
-      [...registryMemories, ...walletRegistryMemories, ...uploadedMemories].reduce<Record<string, MemoryDetail>>(
+      [...registryMemories, ...walletRegistryMemories, ...archivedRegistryMemories, ...uploadedMemories].reduce<Record<string, MemoryDetail>>(
         (acc, memory) => {
           acc[memory.id] = memory;
           return acc;
         },
         {}
       ),
-    [registryMemories, uploadedMemories, walletRegistryMemories]
+    [archivedRegistryMemories, registryMemories, uploadedMemories, walletRegistryMemories]
   );
 
   const refreshSavedMemoriesFromRegistry = useCallback(async (walletAddress?: string | null) => {
@@ -208,6 +225,17 @@ export function MemoryStoreProvider({ children }: { children: ReactNode }) {
       .filter((memory): memory is MemoryDetail => Boolean(memory)),
     [allMemoryDetails, savedMemoryIds]
   );
+
+  const refreshArchivedMemoriesFromRegistry = useCallback(async (walletAddress?: string | null) => {
+    if (!walletAddress || !getRegistryConfig().configured) return;
+    try {
+      await refreshRegistryMemories(walletAddress);
+    } catch (error) {
+      if (process.env.NODE_ENV === 'development') {
+        console.info('Unable to refresh Sui registry archived memories.', error);
+      }
+    }
+  }, [refreshRegistryMemories]);
 
   const filteredMemories = useMemo(
     () =>
@@ -337,6 +365,7 @@ export function MemoryStoreProvider({ children }: { children: ReactNode }) {
       uploadedMemories,
       registryMemories,
       walletRegistryMemories,
+      archivedRegistryMemories,
       savedMemories,
       activeMemory: activeMemoryId ? allMemoryDetails[activeMemoryId] : null,
       selectedYear,
@@ -363,12 +392,14 @@ export function MemoryStoreProvider({ children }: { children: ReactNode }) {
       clearWalletRegistryMemories,
       refreshRegistryMemories,
       refreshSavedMemoriesFromRegistry,
+      refreshArchivedMemoriesFromRegistry,
     }),
     [
       activeMemoryId,
       addMemory,
       allMemories,
       allMemoryDetails,
+      archivedRegistryMemories,
       clearFilters,
       clearLocalEchoMapData,
       clearWalletRegistryMemories,
@@ -380,6 +411,7 @@ export function MemoryStoreProvider({ children }: { children: ReactNode }) {
       memoryCountByYear,
       refreshRegistryMemories,
       refreshSavedMemoriesFromRegistry,
+      refreshArchivedMemoriesFromRegistry,
       registryMemories,
       walletRegistryMemories,
       savedMemoryIds,

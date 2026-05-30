@@ -3,7 +3,7 @@
 import { use, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useCurrentAccount } from '@mysten/dapp-kit';
-import { ArrowLeft, Share2, Heart, Copy, CheckCircle, ExternalLink, Loader2 } from 'lucide-react';
+import { Archive, ArrowLeft, RotateCcw, Share2, Heart, Copy, CheckCircle, ExternalLink, Loader2 } from 'lucide-react';
 import { GlassCard } from '@/components/GlassCard';
 import { GlowButton } from '@/components/GlowButton';
 import { AppShell } from '@/components/layout/AppShell';
@@ -16,6 +16,7 @@ import { getWalrusBlobUrl } from '@/lib/walrus';
 import { fetchLatestProfileForWallet, type RegistryProfile } from '@/lib/registry';
 import { useMemoryStore } from '@/store/memory-store';
 import { useRegistrySavedMemory } from '@/hooks/useRegistrySavedMemory';
+import { useRegistryArchiveMemory } from '@/hooks/useRegistryArchiveMemory';
 
 interface MemoryDetailPageProps {
   params: Promise<{
@@ -49,6 +50,7 @@ export default function MemoryDetailPage({ params }: MemoryDetailPageProps) {
   const [creatorProfile, setCreatorProfile] = useState<RegistryProfile | null>(null);
   const [creatorProfileLoading, setCreatorProfileLoading] = useState(false);
   const { saved: isSaved, isSaving, saveError, toggleSave } = useRegistrySavedMemory(memory);
+  const { archived, isOwner, isArchiving, archiveError, archiveMemory, restoreMemory } = useRegistryArchiveMemory(memory);
 
   useEffect(() => {
     let cancelled = false;
@@ -108,7 +110,7 @@ export default function MemoryDetailPage({ params }: MemoryDetailPageProps) {
     ? `https://suiscan.xyz/${defaultSuiNetwork}/object/${walrusSuiObjectId}`
     : null;
   const creatorDisplayName = creatorProfile?.displayName || 'Wallet Creator';
-  const publicMemoryDetails = Object.values(memoryDetails).filter((item) => (item.visibility || 'public') === 'public');
+  const publicMemoryDetails = Object.values(memoryDetails).filter((item) => (item.visibility || 'public') === 'public' && !item.archived);
   const creatorPublicMemoryCount = publicMemoryDetails.filter(
     (item) => isSuiAddress(item.creatorWallet) && item.creatorWallet.toLowerCase() === memory.creatorWallet.toLowerCase()
   ).length;
@@ -129,6 +131,18 @@ export default function MemoryDetailPage({ params }: MemoryDetailPageProps) {
     navigator.clipboard.writeText(`${window.location.href}`);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleArchiveToggle = async () => {
+    const message = archived
+      ? 'Restore this memory to your profile/public visibility?'
+      : 'Archive this memory? It will be hidden from public discovery but remain preserved on Walrus and Sui.';
+    if (!window.confirm(message)) return;
+    if (archived) {
+      await restoreMemory();
+    } else {
+      await archiveMemory();
+    }
   };
 
   return (
@@ -157,6 +171,27 @@ export default function MemoryDetailPage({ params }: MemoryDetailPageProps) {
             >
               {isSaving ? <Loader2 className="h-5 w-5 animate-spin" /> : <Heart className={cn('w-5 h-5', isSaved && 'fill-current')} />}
             </button>
+            {isOwner && (
+              <button
+                onClick={() => void handleArchiveToggle()}
+                disabled={isArchiving}
+                className={cn(
+                  'inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition disabled:cursor-wait disabled:opacity-70',
+                  archived
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15'
+                    : 'border-yellow-500/40 bg-yellow-500/10 text-yellow-200 hover:bg-yellow-500/15'
+                )}
+              >
+                {isArchiving ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : archived ? (
+                  <RotateCcw className="h-4 w-4" />
+                ) : (
+                  <Archive className="h-4 w-4" />
+                )}
+                <span className="hidden sm:inline">{archived ? 'Restore Memory' : 'Archive Memory'}</span>
+              </button>
+            )}
             <button
               onClick={handleCopyLink}
               className="p-2 rounded-lg hover:bg-cyan-500/10 text-gray-400 hover:text-cyan-400 transition"
@@ -168,6 +203,11 @@ export default function MemoryDetailPage({ params }: MemoryDetailPageProps) {
         {saveError && (
           <p className="mx-auto max-w-7xl px-4 pb-3 text-right text-xs font-semibold text-yellow-200 sm:px-6">
             {saveError}
+          </p>
+        )}
+        {archiveError && (
+          <p className="mx-auto max-w-7xl px-4 pb-3 text-right text-xs font-semibold text-yellow-200 sm:px-6">
+            {archiveError}
           </p>
         )}
         {!account && (
@@ -204,11 +244,13 @@ export default function MemoryDetailPage({ params }: MemoryDetailPageProps) {
                     <span>{memory.location} - {memory.year}</span>
                     <span className={cn(
                       'rounded-full px-3 py-1 text-xs font-semibold sm:text-sm',
-                      (memory.visibility || 'public') === 'unlisted'
+                      archived
+                        ? 'bg-gray-500/20 text-gray-200'
+                        : (memory.visibility || 'public') === 'unlisted'
                         ? 'bg-yellow-500/15 text-yellow-200'
                         : 'bg-emerald-500/15 text-emerald-200'
                     )}>
-                      {(memory.visibility || 'public') === 'unlisted' ? 'Unlisted' : 'Public'}
+                      {archived ? 'Archived' : (memory.visibility || 'public') === 'unlisted' ? 'Unlisted' : 'Public'}
                     </span>
                   </div>
                 </div>
@@ -225,6 +267,14 @@ export default function MemoryDetailPage({ params }: MemoryDetailPageProps) {
 
         {/* Content Section */}
         <div className="mx-auto max-w-4xl px-4 py-10 sm:px-6 sm:py-16">
+          {archived && (
+            <GlassCard strong className="mb-8 border-yellow-500/25 p-4 sm:mb-12">
+              <p className="text-sm font-semibold text-yellow-100">
+                Archived memories are hidden from public discovery but remain preserved on Walrus and Sui.
+              </p>
+            </GlassCard>
+          )}
+
           {/* Story */}
           <GlassCard strong className="mb-8 p-5 sm:mb-12 sm:p-12">
             <h2 className="text-2xl font-bold text-white mb-6">The Story</h2>

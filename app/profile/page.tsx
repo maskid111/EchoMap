@@ -3,16 +3,19 @@
 import { ChangeEvent, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useCurrentAccount, useSignAndExecuteTransaction } from '@mysten/dapp-kit';
-import { Camera, CheckCircle, Copy, Download, Edit2, ExternalLink, Heart, Loader2, Share2, Sparkles, User } from 'lucide-react';
+import { Archive, Camera, CheckCircle, Copy, Download, Edit2, ExternalLink, Eye, Heart, Loader2, RotateCcw, Share2, Sparkles, User } from 'lucide-react';
 import { GlassCard } from '@/components/GlassCard';
 import { GlowButton } from '@/components/GlowButton';
 import { AppShell } from '@/components/layout/AppShell';
 import { MemoryCard } from '@/components/MemoryCard';
+import { MemoryMedia } from '@/components/MemoryMedia';
 import { cn } from '@/lib/utils';
 import { defaultSuiNetwork } from '@/lib/sui-client';
 import { fetchLatestProfileForWallet, getRegistryConfig, registerProfileUpdate } from '@/lib/registry';
 import { getWalrusBlobUrl, uploadFileToWalrus, uploadJsonToWalrus } from '@/lib/walrus';
 import { useMemoryStore } from '@/store/memory-store';
+import { useRegistryArchiveMemory } from '@/hooks/useRegistryArchiveMemory';
+import type { MemoryDetail } from '@/lib/types';
 
 interface LocalProfile {
   displayName: string;
@@ -104,10 +107,62 @@ function drawFallbackAvatar(
   ctx.textBaseline = 'alphabetic';
 }
 
+function ArchivedMemoryCard({ memory }: { memory: MemoryDetail }) {
+  const { isArchiving, archiveError, restoreMemory } = useRegistryArchiveMemory(memory);
+
+  const handleRestore = async () => {
+    if (!window.confirm('Restore this memory to your profile/public visibility?')) return;
+    await restoreMemory();
+  };
+
+  return (
+    <GlassCard strong className="overflow-hidden p-0">
+      <div className="relative h-44">
+        <MemoryMedia
+          image={memory.image}
+          title={memory.title}
+          mediaType={memory.mediaType}
+          mimeType={memory.mimeType}
+          className="h-full w-full"
+        />
+        <div className="absolute left-3 top-3 rounded-full border border-gray-400/30 bg-black/60 px-3 py-1 text-xs font-semibold text-gray-100">
+          Archived
+        </div>
+      </div>
+      <div className="p-4">
+        <h3 className="line-clamp-2 font-semibold text-white">{memory.title}</h3>
+        <p className="mt-1 truncate text-sm text-gray-400">{memory.location} - {memory.year}</p>
+        <p className="mt-3 text-xs leading-relaxed text-gray-500">
+          Archived memories are hidden from public discovery but remain preserved on Walrus and Sui.
+        </p>
+        <div className="mt-4 flex gap-2">
+          <button
+            type="button"
+            onClick={() => void handleRestore()}
+            disabled={isArchiving}
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-200 hover:bg-emerald-500/15 disabled:cursor-wait disabled:opacity-70"
+          >
+            {isArchiving ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+            Restore Memory
+          </button>
+          <Link
+            href={`/memory/${memory.id}`}
+            className="inline-flex items-center justify-center rounded-lg border border-cyan-500/30 px-3 py-2 text-cyan-200 hover:bg-cyan-500/10"
+            aria-label="View details"
+          >
+            <Eye className="h-4 w-4" />
+          </Link>
+        </div>
+        {archiveError && <p className="mt-2 text-xs font-semibold text-yellow-200">{archiveError}</p>}
+      </div>
+    </GlassCard>
+  );
+}
+
 export default function ProfilePage() {
   const account = useCurrentAccount();
   const signAndExecuteTransaction = useSignAndExecuteTransaction();
-  const [activeTab, setActiveTab] = useState<'uploaded' | 'saved'>('uploaded');
+  const [activeTab, setActiveTab] = useState<'uploaded' | 'saved' | 'archived'>('uploaded');
   const [copied, setCopied] = useState<string | null>(null);
   const [profile, setProfile] = useState<LocalProfile>(defaultProfile);
   const [draft, setDraft] = useState<LocalProfile>(defaultProfile);
@@ -122,6 +177,7 @@ export default function ProfilePage() {
   const {
     uploadedMemories,
     walletRegistryMemories,
+    archivedRegistryMemories,
     savedMemories,
     savedMemoryIds,
     refreshRegistryMemories,
@@ -255,6 +311,7 @@ export default function ProfilePage() {
         : 'Preserve memories with Walrus storage and Sui proof receipts.';
   const shareText = `${displayName} is preserving memories on EchoMap. Powered by Sui, Walrus, and Tatum.`;
   const memoriesToShow = !account ? [] : activeTab === 'uploaded' ? walletMemories : savedMemories;
+  const archivedMemories = account ? archivedRegistryMemories.filter((memory) => memory.creatorWallet.toLowerCase() === account.address.toLowerCase()) : [];
 
   const copyText = async (label: string, value: string) => {
     await navigator.clipboard.writeText(value);
@@ -676,7 +733,7 @@ export default function ProfilePage() {
             <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <h2 className="text-xl font-bold text-white">Your Memories</h2>
               <div className="flex w-full gap-2 overflow-x-auto pb-1 sm:w-auto sm:overflow-visible sm:pb-0">
-                {(['uploaded', 'saved'] as const).map((tab) => (
+                {(['uploaded', 'saved', 'archived'] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
@@ -687,13 +744,31 @@ export default function ProfilePage() {
                         : 'bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20'
                     )}
                   >
-                    {tab}
+                    {tab === 'archived' ? (
+                      <span className="inline-flex items-center gap-2"><Archive className="h-4 w-4" />Archived</span>
+                    ) : tab}
                   </button>
                 ))}
               </div>
             </div>
 
-            {memoriesToShow.length > 0 ? (
+            {activeTab === 'archived' ? (
+              archivedMemories.length > 0 ? (
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  {archivedMemories.map((memory) => (
+                    <ArchivedMemoryCard key={memory.id} memory={memory} />
+                  ))}
+                </div>
+              ) : (
+                <GlassCard strong className="p-6 text-center">
+                  <Archive className="mx-auto mb-3 h-7 w-7 text-cyan-300" />
+                  <p className="font-semibold text-white">No archived memories</p>
+                  <p className="mt-2 text-sm text-gray-400">
+                    Archived memories are hidden from public discovery but remain preserved on Walrus and Sui.
+                  </p>
+                </GlassCard>
+              )
+            ) : memoriesToShow.length > 0 ? (
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
                 {memoriesToShow.map((memory) => (
                   <Link key={memory.id} href={`/memory/${memory.id}`}>

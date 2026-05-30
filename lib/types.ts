@@ -20,6 +20,7 @@ export interface MemorySummary {
   suiTxDigest?: string;
   proofStatus?: 'starter' | 'walrus-only' | 'verified' | 'failed';
   visibility?: 'public' | 'unlisted';
+  archived?: boolean;
 }
 
 export interface MemoryPin extends MemorySummary {

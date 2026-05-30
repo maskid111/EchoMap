@@ -51,6 +51,22 @@ public struct MemoryUnsaved has copy, drop {
     timestamp_ms: u64,
 }
 
+/// Event emitted when a wallet archives one of its memories.
+/// Archived memories remain preserved on Walrus and Sui, but are hidden by
+/// frontend/indexer discovery until a later MemoryRestored event wins.
+public struct MemoryArchived has copy, drop {
+    owner: address,
+    metadata_walrus_blob_id: String,
+    timestamp_ms: u64,
+}
+
+/// Event emitted when a wallet restores one of its archived memories.
+public struct MemoryRestored has copy, drop {
+    owner: address,
+    metadata_walrus_blob_id: String,
+    timestamp_ms: u64,
+}
+
 /// Register a memory by emitting a public event.
 /// String fields are passed as Move `String` values by the frontend transaction.
 public entry fun register_memory(
@@ -122,6 +138,32 @@ public entry fun unsave_memory(
     ctx: &mut TxContext,
 ) {
     event::emit(MemoryUnsaved {
+        owner: sender(ctx),
+        metadata_walrus_blob_id,
+        timestamp_ms,
+    });
+}
+
+/// Archive a memory by its metadata Walrus blob ID.
+public entry fun archive_memory(
+    metadata_walrus_blob_id: String,
+    timestamp_ms: u64,
+    ctx: &mut TxContext,
+) {
+    event::emit(MemoryArchived {
+        owner: sender(ctx),
+        metadata_walrus_blob_id,
+        timestamp_ms,
+    });
+}
+
+/// Restore an archived memory by its metadata Walrus blob ID.
+public entry fun restore_memory(
+    metadata_walrus_blob_id: String,
+    timestamp_ms: u64,
+    ctx: &mut TxContext,
+) {
+    event::emit(MemoryRestored {
         owner: sender(ctx),
         metadata_walrus_blob_id,
         timestamp_ms,

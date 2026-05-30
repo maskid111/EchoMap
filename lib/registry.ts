@@ -48,6 +48,11 @@ export interface RegistryUnsaveMemoryParams {
   timestampMs?: number;
 }
 
+export interface RegistryArchiveMemoryParams {
+  metadataWalrusBlobId: string;
+  timestampMs?: number;
+}
+
 interface RegistryEvent {
   id?: {
     txDigest?: string;
@@ -69,6 +74,8 @@ export function getRegistryConfig() {
     profileEventType: packageId ? `${packageId}::registry::ProfileUpdated` : '',
     savedEventType: packageId ? `${packageId}::registry::MemorySaved` : '',
     unsavedEventType: packageId ? `${packageId}::registry::MemoryUnsaved` : '',
+    archivedEventType: packageId ? `${packageId}::registry::MemoryArchived` : '',
+    restoredEventType: packageId ? `${packageId}::registry::MemoryRestored` : '',
   };
 }
 
@@ -160,6 +167,44 @@ export function unsaveMemoryOnRegistry(params: RegistryUnsaveMemoryParams) {
   return tx;
 }
 
+export function archiveMemoryOnRegistry(params: RegistryArchiveMemoryParams) {
+  const config = getRegistryConfig();
+
+  if (!config.packageId) {
+    throw new Error('NEXT_PUBLIC_ECHOMAP_PACKAGE_ID is not configured.');
+  }
+
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${config.packageId}::registry::archive_memory`,
+    arguments: [
+      tx.pure.string(params.metadataWalrusBlobId),
+      tx.pure.u64(params.timestampMs || Date.now()),
+    ],
+  });
+
+  return tx;
+}
+
+export function restoreMemoryOnRegistry(params: RegistryArchiveMemoryParams) {
+  const config = getRegistryConfig();
+
+  if (!config.packageId) {
+    throw new Error('NEXT_PUBLIC_ECHOMAP_PACKAGE_ID is not configured.');
+  }
+
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${config.packageId}::registry::restore_memory`,
+    arguments: [
+      tx.pure.string(params.metadataWalrusBlobId),
+      tx.pure.u64(params.timestampMs || Date.now()),
+    ],
+  });
+
+  return tx;
+}
+
 async function callSuiRpc<T>(method: string, params: unknown[]): Promise<T> {
   const response = await fetch(suiRpcUrl, {
     method: 'POST',
@@ -234,6 +279,7 @@ function eventToMemory(event: RegistryEvent): MemoryDetail | null {
     suiTxDigest: stringField(parsed.proof_tx_digest) || event.id?.txDigest,
     proofStatus: stringField(parsed.proof_tx_digest) ? 'verified' : 'walrus-only',
     visibility,
+    archived: false,
     lat: numberField(parsed.lat),
     lng: numberField(parsed.lng),
     creator: 'EchoMap Contributor',
@@ -252,16 +298,25 @@ function eventToMemory(event: RegistryEvent): MemoryDetail | null {
 
 export async function fetchPublicRegistryMemories(limit = 50): Promise<MemoryDetail[]> {
   const memories = await fetchAllRegistryMemories(limit);
-  return memories.filter((memory) => (memory.visibility || 'public') === 'public');
+  return memories.filter((memory) => (memory.visibility || 'public') === 'public' && !memory.archived);
 }
 
 async function fetchAllRegistryMemories(limit = 50): Promise<MemoryDetail[]> {
   const config = getRegistryConfig();
   if (!config.configured) return [];
 
-  const result = await fetchRegistryEvents(config.eventType, limit);
+  const [result, archivedByOwner] = await Promise.all([
+    fetchRegistryEvents(config.eventType, limit),
+    fetchArchiveStateByOwner(),
+  ]);
 
-  return result.map(eventToMemory).filter((memory): memory is MemoryDetail => Boolean(memory));
+  return result
+    .map(eventToMemory)
+    .filter((memory): memory is MemoryDetail => Boolean(memory))
+    .map((memory) => ({
+      ...memory,
+      archived: isMemoryArchivedForOwner(memory, archivedByOwner),
+    }));
 }
 
 export async function fetchRegistryMemoriesByWallet(walletAddress: string, limit = 50) {
@@ -280,6 +335,59 @@ async function fetchRegistryEvents(eventType: string, limit = 50) {
   ]);
 
   return result.data || [];
+}
+
+type ArchiveState = {
+  archived: boolean;
+  timestampMs: number;
+};
+
+function archiveStateKey(owner: string, metadataWalrusBlobId: string) {
+  return `${owner.trim().toLowerCase()}:${metadataWalrusBlobId}`;
+}
+
+function isMemoryArchivedForOwner(memory: MemoryDetail, archivedByOwner: Map<string, ArchiveState>) {
+  if (!memory.metadataWalrusBlobId || !memory.creatorWallet) return false;
+  return archivedByOwner.get(archiveStateKey(memory.creatorWallet, memory.metadataWalrusBlobId))?.archived || false;
+}
+
+async function fetchArchiveStateByOwner(): Promise<Map<string, ArchiveState>> {
+  const config = getRegistryConfig();
+  const stateByBlob = new Map<string, ArchiveState>();
+  if (!config.configured) return stateByBlob;
+
+  const [archivedEvents, restoredEvents] = await Promise.all([
+    fetchRegistryEvents(config.archivedEventType, 300),
+    fetchRegistryEvents(config.restoredEventType, 300),
+  ]);
+
+  for (const event of archivedEvents) {
+    const parsed = event.parsedJson;
+    const owner = stringField(parsed?.owner);
+    const metadataWalrusBlobId = stringField(parsed?.metadata_walrus_blob_id);
+    if (!owner || !metadataWalrusBlobId) continue;
+    const timestampMs = timestampField(parsed?.timestamp_ms || event.timestampMs);
+    const key = archiveStateKey(owner, metadataWalrusBlobId);
+    const current = stateByBlob.get(key);
+    if (!current || timestampMs >= current.timestampMs) {
+      stateByBlob.set(key, { archived: true, timestampMs });
+    }
+  }
+
+  for (const event of restoredEvents) {
+    const parsed = event.parsedJson;
+    const owner = stringField(parsed?.owner);
+    const metadataWalrusBlobId = stringField(parsed?.metadata_walrus_blob_id);
+    if (!owner || !metadataWalrusBlobId) continue;
+    const timestampMs = timestampField(parsed?.timestamp_ms || event.timestampMs);
+    const key = archiveStateKey(owner, metadataWalrusBlobId);
+    const current = stateByBlob.get(key);
+    if (!current || timestampMs >= current.timestampMs) {
+      stateByBlob.set(key, { archived: false, timestampMs });
+    }
+  }
+
+  return stateByBlob;
 }
 
 async function fetchWalrusJson(blobId: string) {
@@ -366,4 +474,15 @@ export async function fetchSavedMemoryIdsForWallet(walletAddress: string): Promi
   return Array.from(stateByBlob.entries())
     .filter(([, state]) => state.saved)
     .map(([metadataWalrusBlobId]) => metadataWalrusBlobId);
+}
+
+export async function fetchArchivedMemoryIdsForWallet(walletAddress: string): Promise<string[]> {
+  if (!walletAddress || !getRegistryConfig().configured) return [];
+
+  const stateByOwner = await fetchArchiveStateByOwner();
+  const wallet = walletAddress.trim().toLowerCase();
+
+  return Array.from(stateByOwner.entries())
+    .filter(([key, state]) => state.archived && key.startsWith(`${wallet}:`))
+    .map(([key]) => key.slice(wallet.length + 1));
 }
